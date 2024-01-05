@@ -1,0 +1,173 @@
+---
+title: "algorithmic avalanche forecasting"
+author: "Charles Katerba"
+date: "2022-10-03"
+output: html_document
+---
+
+```{r setup, include=T}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+```
+
+## Weather exploration and imputation
+
+We begin by looking at the weather data from the Whitefish range during the 19-20 season to develop a strategy for all seasons and all ranges. 
+
+```{r}
+weather <- read_csv("./weatherData/whitefish_19-20weather.csv") 
+```
+
+**weather** data was collected from the [FAC website](https://looper.avalanche.state.co.us/fac/) and reports conditions at 6A (or as close as possible)
+
+- `date`: the date
+
+- `station`: station name, probably not relevant. 
+
+- `Elev`: station elevation in feet
+
+- `Temp`: current temp, F
+
+- `MxTp`: 24 hour max temp
+
+- `MnTp`: 24 hour min temp
+
+- `DewP`: dew point
+
+- `RH`: relative humidity
+
+- `Spd`: current wind speed, mph   
+
+- `Dir`: wind direction in degrees      
+
+- `Gst`: wind gusts, mph      
+
+- `Pcp1`: 1-hour melted precipitation in
+
+- `Pcp24`: 24-hour melted precipitation, in    
+
+- `PcpAc`: precipitation accumulation since midnight, in
+
+- `Sno24`: 24 hour snowfall, in
+
+- `SWE24`: 24 hour SWE, in  
+
+- `SnoHt`: snow height, in   
+
+- `SWE`: snow water equivalent, in. 
+
+The various stations measure different things, so this data set has a bunch of NA values. We need to figure out which variables are important and how to appropriately impute missing values when appropriate. 
+
+```{r}
+weather <- weather %>%
+  mutate(dateNum = row_number() - 1)
+corTable <- cor(weather[3:18], use = "pairwise.complete.obs")
+
+# look at first 4 rows of each station to see common patters
+small <- weather %>%
+  group_by(Station) %>%
+  filter( row_number() %in% 1:4) %>%
+  view() %>%
+  ungroup()
+```
+
+**Issues/Remedies** Different stations have different weather monitoring strengths and deficiencies.  
+
+1. Biggest issue don't all record precip and those that do record it in different ways!
+
+2. Dont all record temp/wind data, but those that do do it in different ways. Less of an issue and more consistent measurement. 
+
+3. Merge 2 Polebridge records? 
+
+
+```{r}
+# First work on Max/Min Temp; try basic MLR on temp and elevetion.
+# makes sense but Temp at 6A is a good predictor of min temp. Elevation helps too but not as much as you'd expect. 
+minTemp1 <- lm(MnTp ~ Temp, data = weather)
+minTemp2 <- lm(MnTp ~ Temp  + Elev, data = weather)
+anova(minTemp1, minTemp2)
+
+maxTemp1 <- lm(MxTp ~ Temp, data = weather)
+maxTemp2 <- lm(MxTp ~ Temp + Elev, data = weather)
+anova(maxTemp1, maxTemp2)
+
+library(mgcv)
+
+
+```
+
+### Max/min temperature
+
+Generate prediction intervals for min and max temp, then look at plots to decide if we should simply use point estimate or something else. 
+
+alt idea: make model using temps from other elevations/stations on a given day to predict max/min missing temps 
+
+```{r}
+df <- weather %>% select(Temp, Elev)
+minHat <- predict(minTemp2, df, interval = "prediction", level = .95) 
+colnames(minHat) <- c("minFit","minLwr","minUpr")
+
+minHat <- df %>%
+  bind_cols(date = weather$date,
+            MnTp = weather$MnTp) %>%
+  bind_cols(minHat) %>%
+  pivot_longer(cols = 5:7, 
+               names_to = "minEst", 
+               values_to = "minTemp")
+
+maxHat <- predict(maxTemp2, df, interval = "prediction", level = .95)
+colnames(maxHat) <- c("maxFit","maxLwr","maxUpr")
+
+maxHat <- df %>%
+  bind_cols(date = weather$date,
+            MxTp = weather$MxTp) %>%
+  bind_cols(maxHat) %>%
+  pivot_longer(cols = 5:7, 
+               names_to = "maxEst", 
+               values_to = "maxTemp")
+```
+
+The plot below makes our point estimates for `MnTp` seem pretty good.  For simplicity, we'll get started with just the point estimate. 
+
+```{r}
+ggplot(minHat, aes(x = Temp, y = MnTp)) + 
+  geom_point() + 
+  geom_point(aes(x = Temp, y = minTemp, color = minEst))
+
+```
+
+No surprise, max temp is much more involved. For simplicity, we'll simply impute with the point estimate.
+
+```{r}
+p1 <- ggplot(maxHat, aes(x = date, y = MxTp, color = Elev)) + 
+  geom_point() + 
+  geom_smooth()
+p2 <- ggplot(maxHat, aes(x = Temp, y = MxTp)) + 
+  geom_point() + 
+  geom_point(aes(x = Temp, y = maxTemp, color = maxEst))
+
+p1
+```
+
+#### Conclusion
+
+Max/min temp are reasonably well-modeled as linear in `Temp + Elev`; we'll impute with this model just to get things going.
+
+
+### Dew point and RH
+
+Temp and DewPoint are highly correlated
+
+```{r}
+cor(weather$Temp, weather$DewP, use = "pairwise.complete.obs")
+qplot(Temp, DewP, data = weather)
+dewPoint <- lm()
+```
+
+relative humdidty is ... not
+
+```{r}
+qplot(Temp, RH, data = weather)
+
+```
